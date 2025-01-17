@@ -16,8 +16,9 @@ impl<T> UserAgent<T> {
             .map(|value| {
                 let mut buf = Vec::new();
                 buf.extend(value.as_bytes());
-                buf.push(b' ');
-                buf.extend(TONIC_USER_AGENT.as_bytes());
+                // note(clouedoc): remove excess user agent bytes
+                //buf.push(b' ');
+                //buf.extend(TONIC_USER_AGENT.as_bytes());
                 HeaderValue::from_bytes(&buf).expect("user-agent should be valid")
             })
             .unwrap_or_else(|| HeaderValue::from_static(TONIC_USER_AGENT));
