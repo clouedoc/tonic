@@ -8,6 +8,7 @@ use crate::transport::Error;
 use bytes::Bytes;
 use http::{uri::Uri, HeaderValue};
 use hyper::rt;
+use hyper_socks2::{Auth, SocksConnector};
 use hyper_util::client::legacy::connect::HttpConnector;
 use std::{fmt, future::Future, pin::Pin, str::FromStr, time::Duration};
 use tower_service::Service;
@@ -18,6 +19,8 @@ use tower_service::Service;
 #[derive(Clone)]
 pub struct Endpoint {
     pub(crate) uri: Uri,
+    pub(crate) proxy: Option<Uri>,
+    pub(crate) proxy_auth: Option<Auth>,
     pub(crate) origin: Option<Uri>,
     pub(crate) user_agent: Option<HeaderValue>,
     pub(crate) timeout: Option<Duration>,
@@ -105,6 +108,27 @@ impl Endpoint {
                 ..self
             })
             .map_err(|_| Error::new_invalid_user_agent())
+    }
+
+    /// Set a custom proxy
+    ///
+    /// **Caveats**
+    ///
+    /// 1. Only SOCKS5 is supported right now.
+    ///
+    /// 2. The username and password should be provided in the "auth" field.
+    /// They will be ignored if provided as part of the URI (e.g, "socks5://username:password@ip:port"
+    /// will not set the authentication credentials)
+    pub fn proxy(self, proxy: Uri, auth: Option<Auth>) -> Result<Self, Error> {
+        if proxy.scheme_str().unwrap_or("") != "socks5" {
+            return Err(Error::new_invalid_uri());
+        }
+
+        Ok(Self {
+            proxy: Some(proxy),
+            proxy_auth: auth,
+            ..self
+        })
     }
 
     /// Set a custom origin.
@@ -333,9 +357,25 @@ impl Endpoint {
         http.set_keepalive(self.tcp_keepalive);
         http.set_connect_timeout(self.connect_timeout);
 
-        let connector = self.connector(http);
+        match self.proxy.clone() {
+            None => Channel::connect(self.connector(http), self.clone()).await,
+            Some(proxy) => {
+                let socks_connector =
+                    SocksConnector {
+                        proxy_addr: proxy,
+                        auth: self.proxy_auth.clone(),
+                        connector: http,
+                    };
 
-        Channel::connect(connector, self.clone()).await
+                Channel::connect(
+                    self.connector(
+                        socks_connector
+                    ),
+                    self.clone(),
+                )
+                .await
+            }
+        }
     }
 
     /// Create a channel from this config.
@@ -421,6 +461,8 @@ impl From<Uri> for Endpoint {
     fn from(uri: Uri) -> Self {
         Self {
             uri,
+            proxy: None,
+            proxy_auth: None,
             origin: None,
             user_agent: None,
             concurrency_limit: None,
